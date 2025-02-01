@@ -134,8 +134,33 @@ function llm_subtrans_translate()
     print("Select substitle track#" .. sub_track.id, sub_track.title)
 
     -- gather metadata
-    local video_filename = mp.get_property("filename")
-    local video_path = mp.get_property("path")
+    -- TODO: check video url protocol
+    local video_url = mp.get_property("path")
+
+    -- execute subtrans.py
+    local script_dir = mp.get_script_directory()
+    if script_dir == nil then
+        mp.osd_message("Script not install as directory")
+        return
+    end
+    local py_script = script_dir .. "subtrans.py"
+    local args = {
+        python_bin, py_script,
+        "--key", key,
+        "--model", options.model,
+        "--base-url", options.base_url,
+        "--ffmpeg-bin", options.ffmpeg_bin,
+        "--video-url", video_url,
+        "--sub-track-id", sub_track.id - 1 .. "",
+    }
+    print("Execute", utils.format_json(args))
+    local ret = mp.command_native({
+        name="subprocess",
+        args=args,
+        playback_only=false,
+    })
+    print(utils.format_json(ret))
+
 end
 
 
