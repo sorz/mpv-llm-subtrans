@@ -146,7 +146,7 @@ function llm_subtrans_translate()
     local py_script = script_dir .. "subtrans.py"
     local args = {
         python_bin, py_script,
-        "--key", key,
+        "--key", key:sub(1, -32) .. "********", -- reset after being log
         "--model", options.model,
         "--base-url", options.base_url,
         "--ffmpeg-bin", options.ffmpeg_bin,
@@ -154,6 +154,7 @@ function llm_subtrans_translate()
         "--sub-track-id", sub_track.id - 1 .. "",
     }
     print("Execute", utils.format_json(args))
+    args[4] = key
     local ret = mp.command_native({
         name="subprocess",
         args=args,
