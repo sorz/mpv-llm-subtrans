@@ -66,6 +66,7 @@ local running = false
 local py_handle = nil
 
 function llm_subtrans_translate()
+    -- check running
     if running then
         if py_handle ~= nil then
             msg.info("kill python script (user reuqest)")
@@ -78,11 +79,18 @@ function llm_subtrans_translate()
     msg.info("Start subtitle tranlsate")
     running = true
 
+    -- show osd
+    local ov = mp.create_osd_overlay("ass-events")
+    ov.data = "{\\b1}{\\fs28}Subtitle translating…"
+    ov:update()
+
+    -- function to reset state
     local function abort(error)
         if error ~= nil then
             msg.warn("Translate abort:", error)
             mp.osd_message("Translate failed: " .. error)
         end
+        ov:remove()
         running = false
         py_handle = nil
     end
