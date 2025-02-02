@@ -2,7 +2,6 @@
 import re
 import logging
 import argparse
-import itertools
 from dataclasses import dataclass
 from pathlib import Path
 from subprocess import Popen, PIPE
@@ -137,6 +136,15 @@ def extract_subtitle(
                 text_lines.append(SubtitleText.parse(line))
 
 
+def iter_take[T](iter: Iterator[T], num: int) -> Iterator[T]:
+    count = 0
+    for item in iter:
+        yield item
+        count += 1
+        if count >= num:
+            return
+
+
 def translate_subtitle(
     openai: OpenAI,
     model: str,
@@ -145,7 +153,83 @@ def translate_subtitle(
     filename: str,
     lines: Iterator[SubtitleLine],
 ) -> Iterator[SubtitleLine]:
-    pass  # TODO
+    dev_prompt = PROMPT.format(
+        dest_lang=dest_lang, filename=filename,
+    )
+    batch = []
+    while True:
+        batch.extend(iter_take(lines, batch_size - len(batch)))
+        translated_count = 0
+        items = translate_subtitle_batch(openai, model, dev_prompt, batch)
+        for item in items:
+            translated_count += 1
+            yield item
+        logging.info("translated %s dialogous in batch", translated_count)
+        batch = batch[translated_count:]
+
+
+def translate_subtitle_batch(
+    openai: OpenAI,
+    model: str,
+    dev_prompt: str,
+    batch_lines: list[SubtitleLine],
+) -> Iterator[SubtitleLine]:
+    # Send request
+    user_prompt = "\n\n".join(l.format_tiny() for l in batch_lines)
+    print(user_prompt)
+    stream = openai.chat.completions.create(
+        model=model,
+        stream=True,
+        messages=[
+            {"role": "developer", "content": dev_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+    )
+
+    parsed_dialogus = 0
+    line_buf: list[str] = []  # received but not yet parsed lines, end with "\n"
+    for chunk in stream:
+        raw = chunk.choices[0].delta.content
+        if raw is None:
+            break
+        lines = raw.replace("\r", "").splitlines(keepends=True)
+        if not lines or lines[-1].endswith("\n"):
+            line_buf.extend(lines)
+        else:
+            line_buf[-1] += lines[0]
+            line_buf.extend(lines[1:])
+        if line_buf[-1] == "\n":  # empty line indicates end of dialogus
+            # parse seq num
+            seq_line = line_buf[0].strip()
+            if not seq_line.isdigit():
+                logging.warning("expect seq num, found `%s`", seq_line)
+                line_buf = []
+                continue
+            seq_num = int(seq_line)
+
+            # find original dialogous
+            if parsed_dialogus + 1 > len(batch_lines):
+                logging.warning("received dialogus (%s) > sent (%s)", parsed_dialogus + 1, len(batch_lines))
+                break
+            orig = batch_lines[parsed_dialogus]
+            if orig.seq != seq_num:
+                logging.warning("seq num mismatched (tx:%s != rx:%s)", orig.seq, seq_num)
+                # TODO: try to resync & continue?
+                break
+
+            # reformat translated text
+            text_lines = [l.strip() for l in line_buf[1:-1]]
+            if len(orig.text_lines) != len(text_lines):
+                logging.warning("text lines mismatched (tx:%s != rx:%s)",len(orig.text_lines), len(text_lines))
+                # TODO: skip format & continue
+                break
+            yield SubtitleLine(
+                seq=seq_num,
+                time_line=orig.time_line,
+                text_lines=[SubtitleText(text, orig.font) for orig, text in zip(orig.text_lines, text_lines)]
+            )
+        return
+
 
 def main():
     parser = argparse.ArgumentParser(
