@@ -12,10 +12,11 @@ from openai import OpenAI
 
 RE_KEY_OPENAI = r"sk-\w+T3BlbkFJ\w+"  # T3BlbkFJ = base64("OpenAI")
 RE_KEY_DEEPSEEK = r"TODO"
-PROMPT = """
+PROMPT = """\
 User will input content of SubRip (SRT) subtitles, with timestamp lines \
 removed to save tokens. You need to translate these dialogues into \
-{dest_lang}, and return in the same SRT-like format.
+{dest_lang}, and return in the same format, plaintext without markdown. \
+Keep formatting tags (e.g. <i>, <font>) not touch.
 
 For reference, filename of this video is "{filename}".
 """
@@ -51,6 +52,7 @@ class SubtitleText:
     <font> are commonly wrapped around every lines for ASS-converted SubRip.
     Trimming out them saves a lot of tokens.
     """
+
     text: str
     font: Optional[str] = None
 
@@ -75,12 +77,12 @@ class SubtitleLine:
     seq: int
     time_line: str
     text_lines: list[SubtitleText]
-            
+
     def format_tiny(self) -> str:
         """SRT dialogus without timestamp line or font tag"""
         body = "\n".join(l.text for l in self.text_lines)
         return f"{self.seq}\n{body}"
-    
+
     def format_full(self) -> str:
         """SRT dialogus with timestamp and font tag"""
         body = "\n".join(f"{l}" for l in self.text_lines)
@@ -154,7 +156,8 @@ def translate_subtitle(
     lines: Iterator[SubtitleLine],
 ) -> Iterator[SubtitleLine]:
     dev_prompt = PROMPT.format(
-        dest_lang=dest_lang, filename=filename,
+        dest_lang=dest_lang,
+        filename=filename,
     )
     batch = []
     while True:
@@ -168,70 +171,101 @@ def translate_subtitle(
         batch = batch[translated_count:]
 
 
+class RespBuf:
+    def __init__(self):
+        # received but not yet parsed lines, end with "\n"
+        self._line_buf: list[str] = []
+
+    def put(self, raw: str):
+        lines = raw.replace("\r", "").splitlines(keepends=True)
+        if not self._line_buf or self._line_buf[-1].endswith("\n"):
+            # new line(s) received
+            self._line_buf.extend(lines)
+        else:
+            # last line cont'd
+            self._line_buf[-1] += lines[0]
+            self._line_buf.extend(lines[1:])
+        # skip leading empty lines (just in case)
+        if self._line_buf == ["\n"] or self._line_buf == [""]:
+            self._line_buf.pop()
+
+    def endswith_empty_line(self) -> bool:
+        return bool(self._line_buf) and self._line_buf[-1] == "\n"
+
+    def reset(self):
+        self._line_buf = []
+
+    def parse(self, src: SubtitleLine) -> SubtitleLine:
+        # parse & check seq num
+        try:
+            seq = int(self._line_buf[0].strip())
+        except ValueError as err:
+            raise ValueError("failed to parse seq num", err)
+        if seq != src.seq:
+            raise ValueError(f"seq num mismatched (tx:{src.seq} != rx:{seq})")
+
+        # parse & reformat translated text
+        if self.endswith_empty_line():
+            self._line_buf.pop()
+        lines = [l.strip() for l in self._line_buf[1:]]
+        if len(src.text_lines) != len(lines):
+            logging.warning("text lines mismatched, formating ignored")
+            text_lines = [SubtitleText(l) for l in lines]
+        else:
+            text_lines = [
+                SubtitleText(text, orig.font)
+                for orig, text in zip(src.text_lines, lines)
+            ]
+        return SubtitleLine(seq, src.time_line, text_lines)
+
+    def __bool__(self):
+        return bool(self._line_buf)
+
+
 def translate_subtitle_batch(
     openai: OpenAI,
     model: str,
     dev_prompt: str,
     batch_lines: list[SubtitleLine],
 ) -> Iterator[SubtitleLine]:
-    # Send request
+    # send request
     user_prompt = "\n\n".join(l.format_tiny() for l in batch_lines)
-    print(user_prompt)
     stream = openai.chat.completions.create(
         model=model,
         stream=True,
         messages=[
             {"role": "developer", "content": dev_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
+            {"role": "user", "content": user_prompt},
+        ],
     )
 
-    parsed_dialogus = 0
-    line_buf: list[str] = []  # received but not yet parsed lines, end with "\n"
+    # parse response
+    orig = iter(batch_lines)
+    buf = RespBuf()
     for chunk in stream:
-        raw = chunk.choices[0].delta.content
-        if raw is None:
-            break
-        lines = raw.replace("\r", "").splitlines(keepends=True)
-        if not lines or lines[-1].endswith("\n"):
-            line_buf.extend(lines)
-        else:
-            line_buf[-1] += lines[0]
-            line_buf.extend(lines[1:])
-        if line_buf[-1] == "\n":  # empty line indicates end of dialogus
-            # parse seq num
-            seq_line = line_buf[0].strip()
-            if not seq_line.isdigit():
-                logging.warning("expect seq num, found `%s`", seq_line)
-                line_buf = []
-                continue
-            seq_num = int(seq_line)
-
-            # find original dialogous
-            if parsed_dialogus + 1 > len(batch_lines):
-                logging.warning("received dialogus (%s) > sent (%s)", parsed_dialogus + 1, len(batch_lines))
-                break
-            orig = batch_lines[parsed_dialogus]
-            if orig.seq != seq_num:
-                logging.warning("seq num mismatched (tx:%s != rx:%s)", orig.seq, seq_num)
-                # TODO: try to resync & continue?
-                break
-
-            # reformat translated text
-            text_lines = [l.strip() for l in line_buf[1:-1]]
-            if len(orig.text_lines) != len(text_lines):
-                logging.warning("text lines mismatched (tx:%s != rx:%s)",len(orig.text_lines), len(text_lines))
-                # TODO: skip format & continue
-                break
-            yield SubtitleLine(
-                seq=seq_num,
-                time_line=orig.time_line,
-                text_lines=[SubtitleText(text, orig.font) for orig, text in zip(orig.text_lines, text_lines)]
-            )
-        return
+        choice = chunk.choices[0]
+        content = choice.delta.content
+        if content:
+            buf.put(content)
+        match choice.finish_reason:
+            case None:
+                pass
+            case "length":  # truncated response
+                return
+            case "stop":  # done, parse the last one
+                if buf:
+                    yield buf.parse(next(orig))
+                return
+            case _:
+                logging.warning("unknown finish reason %s", choice.finish_reason)
+                return
+        if buf.endswith_empty_line():
+            yield buf.parse(next(orig))
+            buf.reset()
 
 
 def main():
+    logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(
         prog="mpv-llm-subtrans",
         description="MPV plugin for translating subtitles with LLM",
@@ -276,14 +310,14 @@ def main():
 
     translated = translate_subtitle(
         openai=openai,
-        model=model, 
+        model=model,
         batch_size=args.batch_size,
         dest_lang=args.dest_lang,
         filename=Path(args.video_url).stem,
-        lines=subtitle_lines
+        lines=subtitle_lines,
     )
     for line in translated:
-        print(line)
+        print(line)  # TODO
 
 
 if __name__ == "__main__":
