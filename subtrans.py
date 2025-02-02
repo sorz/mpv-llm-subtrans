@@ -44,6 +44,7 @@ class Args:
     sub_track_id: int
     dest_lang: str
     batch_size: int
+    output_path: str
 
 
 @dataclass
@@ -297,6 +298,7 @@ def main():
     )
     parser.add_argument("--dest-lang", required=True, help="Destination language")
     parser.add_argument("--batch-size", type=int, default=100)
+    parser.add_argument("--output-path", required=True)
     args = Args(**vars(parser.parse_args()))
 
     # Extract subtitle with ffmpeg (async)
@@ -322,6 +324,7 @@ def main():
         raise ValueError("No model specified")
     openai = OpenAI(api_key=args.key, base_url=base_url)
 
+    # Translate (async)
     translated = translate_subtitle(
         openai=openai,
         model=model,
@@ -330,8 +333,16 @@ def main():
         filename=Path(args.video_url).stem,
         lines=subtitle_lines,
     )
-    for line in translated:
-        print(line)  # TODO
+
+    # Write out
+    output = Path(args.output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    logging.info("Write to %s", output.resolve())
+    with output.open("w", encoding="utf-8") as f:
+        for line in translated:
+            f.write(line.format_full())
+            f.write("\n\n")
+            f.flush()
 
 
 if __name__ == "__main__":

@@ -3,12 +3,13 @@ local msg = require 'mp.msg'
 
 local options = {
     dest_lang = "English", -- the language you want
-    key = "", -- leave empty to read from environment variable OPENAI_API_KEY
-    model = "",  -- leave empty to use default model (gpt-4o-mini or deepseek-chat)
-    base_url = "", -- leave empty to guess from key (OpenAI or DeekSeek)
-    python_bin = "", -- path to python, leave empty to find `python3` & `py` from PATH
+    key = "", -- default to read from environment variable OPENAI_API_KEY
+    model = "",  -- default to use default model (gpt-4o-mini or deepseek-chat)
+    base_url = "", -- default to guess from key (OpenAI or DeekSeek)
+    python_bin = "", -- path to python, default to find `python3` & `py` from PATH
     ffmpeg_bin = "ffmpeg", -- path to ffmpeg execute
     batch_size = 50, -- number of dialogous send in one translate request
+    output_dir = "", -- where to put translated srt files, default to "<SCRIPT_DIR>/translated/"
 }
 
 local function check_python_version(bin)
@@ -85,6 +86,7 @@ function llm_subtrans_translate()
     ov:update()
 
     -- function to reset state
+    local timer = nil
     local function abort(error)
         if error ~= nil then
             msg.warn("Translate abort:", error)
@@ -93,6 +95,10 @@ function llm_subtrans_translate()
         ov:remove()
         running = false
         py_handle = nil
+        if timer ~= nil then
+            timer:kill()
+            timer = nil
+        end
     end
 
     -- check python
@@ -170,6 +176,14 @@ function llm_subtrans_translate()
     -- TODO: check video url protocol
     local video_url = mp.get_property("path")
 
+    -- set output path
+    local output_path = options.output_dir
+    if output_path == "" then
+        output_path = mp.get_script_directory() .. "translated"
+    end
+    output_path = output_path .. "/" .. mp.get_property("filename/no-ext") .. ".srt"
+    msg.info("Save file to", output_path)
+
     -- execute subtrans.py
     local script_dir = mp.get_script_directory()
     if script_dir == nil then
@@ -186,6 +200,7 @@ function llm_subtrans_translate()
         "--sub-track-id", sub_track.id - 1 .. "",
         "--batch-size", options.batch_size .. "",
         "--dest-lang", options.dest_lang,
+        "--output-path", output_path,
     }
     msg.debug("Execute", utils.format_json(args))
     args[5] = key
@@ -207,6 +222,20 @@ function llm_subtrans_translate()
         end
         mp.osd_message("Substitle translate done")
         abort()
+    end)
+
+    -- monitor output file
+    local output_file_size = 0
+    timer = mp.add_periodic_timer(5, function ()
+        local stats = utils.file_info(output_path)
+        if stats == nil then
+            return
+        end
+        if stats.size > output_file_size then
+            msg.info("File updated:", stats.size, "bytes")
+            output_file_size = stats.size
+            -- TODO: set subtitle file
+        end
     end)
 
 end
