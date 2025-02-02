@@ -1,11 +1,14 @@
 local utils = require 'mp.utils'
+local msg = require 'mp.msg'
 
 local options = {
-    model = "",  -- leave empty to use default model (gpt-4o-mini or deepseek-chat)
+    dest_lang = "English", -- the language you want
     key = "", -- leave empty to read from environment variable OPENAI_API_KEY
+    model = "",  -- leave empty to use default model (gpt-4o-mini or deepseek-chat)
     base_url = "", -- leave empty to guess from key (OpenAI or DeekSeek)
     python_bin = "", -- path to python, leave empty to find `python3` & `py` from PATH
     ffmpeg_bin = "ffmpeg", -- path to ffmpeg execute
+    batch_size = 50, -- number of dialogous send in one translate request
 }
 
 local function check_python_version(bin)
@@ -37,10 +40,10 @@ local function check_python_openai(python_bin)
         capture_stdout=true,
     })
     if ret.status ~= 0 then
-        print(python_bin, "-m openai --version:", ret.status)
+        msg.warn(python_bin, "-m openai --version:", ret.status)
         return false
     end
-    print("openai found:", ret.stdout:gsub("%s+$", ""))
+    msg.info("openai found:", ret.stdout:gsub("%s+$", ""))
     return true
 end
 
@@ -52,15 +55,37 @@ local function check_ffmpeg(bin)
         capture_stdout=true,
     })
     if ret.status ~= 0 then
-        print(bin, "exit with", ret.status)
+        msg.warn(bin, "exit with", ret.status)
         return false
     end
-    print("ffmpeg found:", ret.stdout:match("^([^-]+)"))
+    msg.info("ffmpeg found:", ret.stdout:match("^([^-]+)"))
     return true
 end
 
+local running = false
+local py_handle = nil
+
 function llm_subtrans_translate()
-    print("Start subtitle tranlsate")
+    if running then
+        if py_handle ~= nil then
+            msg.info("kill python script (user reuqest)")
+            mp.abort_async_command(py_handle)
+        else
+            msg.info("already running")
+        end
+        return
+    end
+    msg.info("Start subtitle tranlsate")
+    running = true
+
+    local function abort(error)
+        if error ~= nil then
+            msg.warn("Translate abort:", error)
+            mp.osd_message("Translate failed: " .. error)
+        end
+        running = false
+        py_handle = nil
+    end
 
     -- check python
     local python_bin = options.python_bin
@@ -69,33 +94,30 @@ function llm_subtrans_translate()
         for _, bin in ipairs({"python3", "py"}) do
             local ok, _ = check_python_version(bin)
             if ok then
-                print("Python found as", bin)
+                msg.info("Python found as", bin)
                 python_bin = bin
                 break
             end
         end
         if python_bin == "" then
-            mp.osd_message("Python not found")
-            return
+            return abort("Python not found")
         end
     else
         local ok, err = check_python_version(python_bin)
         if not ok then
-            mp.osd_message("Python not working: " .. err)
+            return abort("Python not working: " .. err)
         end
     end
 
     -- check python-openai
     local ok, _ = check_python_openai(python_bin)
     if not ok then
-        mp.osd_message("Python module `openai` not found")
-        return
+        return abort("Python module `openai` not found")
     end
 
     -- check ffmpeg
     if not check_ffmpeg(options.ffmpeg_bin) then
-        mp.osd_message("`ffmpeg` not found")
-        return
+        return abort("`ffmpeg` not found")
     end
 
     -- check key, the only required option
@@ -111,8 +133,12 @@ function llm_subtrans_translate()
         end
     end
     if key == "" then
-        mp.osd_message("API key not found")
-        return
+        return abort("API key not found")
+    end
+
+    -- check dest_lang
+    if options.dest_lang == "" then
+        return abort("dest_lang cannot be empty")
     end
 
     -- select subtitle track
@@ -128,10 +154,9 @@ function llm_subtrans_translate()
         end
     end
     if sub_track == nil then
-        mp.osd_message("No source substitle found")
-        return
+        return abort("no source substitle found")
     end
-    print("Select substitle track#" .. sub_track.id, sub_track.title)
+    msg.info("Select substitle track#" .. sub_track.id, sub_track.title)
 
     -- gather metadata
     -- TODO: check video url protocol
@@ -140,31 +165,43 @@ function llm_subtrans_translate()
     -- execute subtrans.py
     local script_dir = mp.get_script_directory()
     if script_dir == nil then
-        mp.osd_message("Script not install as directory")
-        return
+        return abort("script not install as directory")
     end
     local py_script = script_dir .. "subtrans.py"
     local args = {
-        python_bin, py_script,
+        python_bin, "-u", py_script,
         "--key", key:sub(1, -32) .. "********", -- reset after being log
         "--model", options.model,
         "--base-url", options.base_url,
         "--ffmpeg-bin", options.ffmpeg_bin,
         "--video-url", video_url,
         "--sub-track-id", sub_track.id - 1 .. "",
+        "--batch-size", options.batch_size .. "",
+        "--dest-lang", options.dest_lang,
     }
-    print("Execute", utils.format_json(args))
-    args[4] = key
-    local ret = mp.command_native({
+    msg.debug("Execute", utils.format_json(args))
+    args[5] = key
+    py_handle = mp.command_native_async({
         name="subprocess",
         args=args,
         playback_only=false,
-    })
-    print(utils.format_json(ret))
+    }, function (success, result, error)
+        msg.debug("Python script exit:", utils.format_json(result))
+        if not success then
+            return abort("failed to execute command: " .. error)
+        end
+        if result.killed_by_us then
+            mp.osd_message("Translate cancelled")
+            return abort()
+        end
+        if result.status ~= 0 then
+            return abort("script exit with " .. result.status .. " " .. result.error_string)
+        end
+        mp.osd_message("Substitle translate done")
+        abort()
+    end)
 
 end
-
-
 
 require "mp.options".read_options(options, "llm_subtrans")
 mp.add_key_binding('alt+t', llm_subtrans_translate)
