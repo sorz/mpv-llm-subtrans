@@ -159,16 +159,30 @@ def translate_subtitle(
         dest_lang=dest_lang,
         filename=filename,
     )
-    batch = []
-    while True:
-        batch.extend(iter_take(lines, batch_size - len(batch)))
+    batch_count = 0
+    batch = list(iter_take(lines, batch_size))
+    while batch:
         translated_count = 0
         items = translate_subtitle_batch(openai, model, dev_prompt, batch)
-        for item in items:
-            translated_count += 1
-            yield item
-        logging.info("translated %s dialogous in batch", translated_count)
+        try:
+            for item in items:
+                translated_count += 1
+                yield item
+        except Exception as err:
+            logging.warning(
+                "translate error at batch#%s line#%s: %s",
+                batch_count,
+                translated_count,
+                err,
+            )
+            if translated_count == 0:
+                logging.error("translate failure")
+                break
+        logging.info(
+            "translated %s dialogous in batch#%s", translated_count, batch_count
+        )
         batch = batch[translated_count:]
+        batch.extend(iter_take(lines, batch_size - len(batch)))
 
 
 class RespBuf:
