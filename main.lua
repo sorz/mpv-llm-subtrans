@@ -87,6 +87,7 @@ function llm_subtrans_translate()
 
     -- function to reset state
     local timer = nil
+    local rpc_file = nil
     local function abort(error)
         if error ~= nil then
             msg.warn("Translate abort:", error)
@@ -98,6 +99,9 @@ function llm_subtrans_translate()
         if timer ~= nil then
             timer:kill()
             timer = nil
+        end
+        if rpc_file ~= nil then
+            rpc_file:close()
         end
     end
 
@@ -174,6 +178,7 @@ function llm_subtrans_translate()
     -- set file path
     local output_dir = mp.command_native({"expand-path", options.output_dir})
     local srt_path = output_dir .. "/" .. mp.get_property("filename/no-ext") .. ".srt"
+    local ipc_path = output_dir .. "/.progress"
     msg.info("Save file to", srt_path)
 
     -- execute subtrans.py
@@ -193,6 +198,7 @@ function llm_subtrans_translate()
         "--batch-size", options.batch_size .. "",
         "--dest-lang", options.dest_lang,
         "--output-path", srt_path,
+        "--ipc-path", ipc_path,
     }
     msg.debug("Execute", utils.format_json(args))
     args[5] = key
@@ -213,32 +219,62 @@ function llm_subtrans_translate()
             return abort("script exit with " .. result.status .. " " .. result.error_string)
         end
         mp.osd_message("Substitle translate done")
+        mp.command_native({name="sub-reload"})
         abort()
     end)
 
     -- monitor output file
-    local output_file_size = 0
-    timer = mp.add_periodic_timer(5, function ()
-        local stats = utils.file_info(srt_path)
-        if stats == nil then
-            return
+    local CHECK_INTERVAL_SECS = 3
+    local last_progress = nil
+    timer = mp.add_periodic_timer(CHECK_INTERVAL_SECS, function ()
+        -- open rpc file
+        if rpc_file == nil then
+            rpc_file = io.open(ipc_path, "r")
+            if rpc_file == nil then return end
         end
-        if stats.size > output_file_size then
-            msg.info("File updated:", stats.size, "bytes")
-            if output_file_size == 0 then
-                msg.info("Set tranlsated substitles")
-                mp.command_native({
-                    name="sub-add",
-                    url=srt_path,
-                    title="Translated",
-                })
-            else
-                msg.info("Reload translated subtitles")
-                mp.command_native({name="sub-reload"})
-                -- FIXME: broken when mpv find appending on srt
+        -- read progress from rpc file
+        rpc_file:seek("set")
+        local progress = utils.parse_json(rpc_file:read("*a"))
+        if progress == nil then return end -- ignore parse error
+        -- check if progress got updated
+        if last_progress ~= nil and
+            last_progress["last_seq"] >= progress["last_seq"]
+        then return end
+        msg.info("Progress: " .. utils.format_json(progress))
+
+        -- set/reload subtitle
+        if last_progress == nil then
+            -- first update, active substitles now
+            msg.info("Set tranlsated substitles")
+            mp.command_native({
+                name="sub-add",
+                url=srt_path,
+                title="Translated",
+            })
+            last_progress = progress
+        else
+            -- only reload when necessary
+            local old_sub_end_pos = last_progress["last_timestamp_millis"][2]
+            local new_sub_start_pos = progress["last_timestamp_millis"][1]
+            local pos = mp.get_property_native("time-pos", 0) * 1000
+            print("old", old_sub_end_pos, "new", new_sub_start_pos, "pos", pos)
+            -- condition 1/2: run out of dialogous
+            if old_sub_end_pos - pos < CHECK_INTERVAL_SECS * 2 * 1000 then
+                -- condition 2/2: new file coverd current play position
+                if new_sub_start_pos > pos then
+                    msg.info("Reload translated subtitles")
+                    mp.command_native({name="sub-reload"})
+                    last_progress = progress
+                end
             end
-            output_file_size = stats.size
         end
+
+        -- update progress
+        local total_ms = mp.get_property("duration/full") * 1000
+        local current_ms = progress["last_timestamp_millis"][2]
+        -- TODO: show progress in OSD
+        print("current", current_ms, "total", total_ms)
+        print(string.format("prog %d%%", current_ms / total_ms * 100))
     end)
 
 end

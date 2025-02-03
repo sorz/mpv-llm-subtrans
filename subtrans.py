@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import re
+import json
+import locale
 import logging
 import argparse
-from dataclasses import dataclass
 from pathlib import Path
+from dataclasses import dataclass
 from subprocess import Popen, PIPE
-from typing import Iterator, Optional
+from typing import Iterator, NotRequired, Optional, TypedDict
 
 from openai import OpenAI
 
@@ -45,6 +47,7 @@ class Args:
     dest_lang: str
     batch_size: int
     output_path: str
+    ipc_path: str
 
 
 @dataclass(frozen=True)
@@ -70,6 +73,21 @@ class SubtitleLine:
             text_lines=[re.sub(r"<font[^>]+>|</font>", "", l) for l in self.text_lines],
         )
 
+    @property
+    def timestamp_millis(self) -> tuple[int, int]:
+        matches = re.findall(r"((\d\d:){2}\d\d(,\d{1,3}))", self.time_line)
+        ts = []
+        for match, *_ in matches:
+            h, m, s = match.split(":", 3)
+            if "," in s:
+                s, ms = s.split(",", 2)
+            else:
+                ms = "0"
+            ts.append((((int(h) * 60) + int(m) * 60) + int(s)) * 1000 + int(ms))
+        if len(ts) != 2:
+            raise ValueError("malformated timestamp (%s)" % self.time_line)
+        return ts[0], ts[1]
+
 
 def extract_subtitle(
     ffmpeg_bin: str, video_url: str, sub_track_id: int
@@ -78,7 +96,7 @@ def extract_subtitle(
         ffmpeg_bin,
         "-hide_banner",
         "-loglevel",
-        "warning",
+        "error",
         "-i",
         video_url,
         "-map",
@@ -254,27 +272,43 @@ def translate_subtitle_batch(
             buf.reset()
 
 
+class Progress(TypedDict):
+    last_seq: int
+    last_timestamp_millis: tuple[int, int]
+
+
 def main():
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(
         prog="mpv-llm-subtrans",
         description="MPV plugin for translating subtitles with LLM",
     )
-    parser.add_argument("--key", required=True, help="API key")
-    parser.add_argument("--model", required=True, help="Model name")
-    parser.add_argument("--base-url", required=True, help="API base URL")
-    parser.add_argument("--ffmpeg-bin", required=True, help="ffmpeg execute path")
-    parser.add_argument("--video-url", required=True, help="video file path")
+    parser.add_argument("--key", default="", help="API key")
+    parser.add_argument("--model", default="", help="Model name")
+    parser.add_argument("--base-url", default="", help="API base URL")
+    parser.add_argument("--ffmpeg-bin", default="", help="ffmpeg execute path")
+    parser.add_argument("--video-url", default="", help="video file path")
     parser.add_argument(
         "--sub-track-id",
-        required=True,
+        default=0,
         type=int,
         help="track id of subtitle, start from 0",
     )
-    parser.add_argument("--dest-lang", required=True, help="Destination language")
+    parser.add_argument("--dest-lang", default="", help="Destination language")
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--output-path", required=True)
+    parser.add_argument("--ipc-path", required=True)
     args = Args(**vars(parser.parse_args()))
+
+    # Set dest_lang
+    dest_lang = args.dest_lang
+    if not dest_lang:
+        loc, _ = locale.getlocale()
+        if loc is None or loc == "C":
+            dest_lang = "English"
+        else:
+            dest_lang = loc
+    logging.info("Target language: %s", dest_lang)
 
     # Extract subtitle with ffmpeg (async)
     subtitle_lines = extract_subtitle(
@@ -304,20 +338,37 @@ def main():
         openai=openai,
         model=model,
         batch_size=args.batch_size,
-        dest_lang=args.dest_lang,
+        dest_lang=dest_lang,
         filename=Path(args.video_url).stem,
         lines=subtitle_lines,
     )
 
     # Write out
-    output = Path(args.output_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    logging.info("Write to %s", output.resolve())
-    with output.open("w", encoding="utf-8") as f:
-        for line in translated:
-            f.write(line.format_full())
-            f.write("\n\n")
-            f.flush()
+    srt_path = Path(args.output_path)
+    ipc_path = Path(args.ipc_path)
+    srt_path.parent.mkdir(parents=True, exist_ok=True)
+    ipc_path.parent.mkdir(parents=True, exist_ok=True)
+    logging.info("Write to %s", srt_path.resolve())
+
+    with srt_path.open("w", encoding="utf-8") as srt:
+        with ipc_path.open("w") as ipc:
+            for line in translated:
+                srt.write(line.format_full())
+                srt.write("\n\n")
+                srt.flush()
+
+                try:
+                    ipc.seek(0)
+                    json.dump(
+                        Progress(
+                            last_seq=line.seq,
+                            last_timestamp_millis=line.timestamp_millis,
+                        ),
+                        ipc,
+                    )
+                    ipc.truncate()
+                except (ValueError, IOError) as err:
+                    logging.warning("failed to update progress: %s", err)
 
 
 if __name__ == "__main__":
