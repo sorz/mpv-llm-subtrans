@@ -10,6 +10,7 @@ local options = {
     ffmpeg_bin = "ffmpeg", -- path to ffmpeg execute
     batch_size = 50, -- number of dialogous send in one translate request
     output_dir = "", -- where to put translated srt files, default to "<SCRIPT_DIR>/translated/"
+    -- TODO: use ~~cache/llm_subtrans_subtitles/
 }
 
 local function check_python_version(bin)
@@ -233,8 +234,19 @@ function llm_subtrans_translate()
         end
         if stats.size > output_file_size then
             msg.info("File updated:", stats.size, "bytes")
+            if output_file_size == 0 then
+                msg.info("Set tranlsated substitles")
+                mp.command_native({
+                    name="sub-add",
+                    url=output_path,
+                    title="Translated",
+                })
+            else
+                msg.info("Reload translated subtitles")
+                mp.command_native({name="sub-reload"})
+                -- FIXME: broken when mpv find appending on srt
+            end
             output_file_size = stats.size
-            -- TODO: set subtitle file
         end
     end)
 
