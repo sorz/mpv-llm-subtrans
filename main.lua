@@ -2,15 +2,14 @@ local utils = require 'mp.utils'
 local msg = require 'mp.msg'
 
 local options = {
-    dest_lang = "English", -- the language you want
+    dest_lang = "", -- the language you want, default to guess with system's language
     key = "", -- default to read from environment variable OPENAI_API_KEY
     model = "",  -- default to use default model (gpt-4o-mini or deepseek-chat)
     base_url = "", -- default to guess from key (OpenAI or DeekSeek)
     python_bin = "", -- path to python, default to find `python3` & `py` from PATH
     ffmpeg_bin = "ffmpeg", -- path to ffmpeg execute
     batch_size = 50, -- number of dialogous send in one translate request
-    output_dir = "", -- where to put translated srt files, default to "<SCRIPT_DIR>/translated/"
-    -- TODO: use ~~cache/llm_subtrans_subtitles/
+    output_dir = "~~cache/llm_subtrans_subtitles", -- where to put translated srt files
 }
 
 local function check_python_version(bin)
@@ -151,11 +150,6 @@ function llm_subtrans_translate()
         return abort("API key not found")
     end
 
-    -- check dest_lang
-    if options.dest_lang == "" then
-        return abort("dest_lang cannot be empty")
-    end
-
     -- select subtitle track
     local sub_track = mp.get_property_native("current-tracks/sub")
     if sub_track == nil then
@@ -177,13 +171,10 @@ function llm_subtrans_translate()
     -- TODO: check video url protocol
     local video_url = mp.get_property("path")
 
-    -- set output path
-    local output_path = options.output_dir
-    if output_path == "" then
-        output_path = mp.get_script_directory() .. "translated"
-    end
-    output_path = output_path .. "/" .. mp.get_property("filename/no-ext") .. ".srt"
-    msg.info("Save file to", output_path)
+    -- set file path
+    local output_dir = mp.command_native({"expand-path", options.output_dir})
+    local srt_path = output_dir .. "/" .. mp.get_property("filename/no-ext") .. ".srt"
+    msg.info("Save file to", srt_path)
 
     -- execute subtrans.py
     local script_dir = mp.get_script_directory()
@@ -201,7 +192,7 @@ function llm_subtrans_translate()
         "--sub-track-id", sub_track.id - 1 .. "",
         "--batch-size", options.batch_size .. "",
         "--dest-lang", options.dest_lang,
-        "--output-path", output_path,
+        "--output-path", srt_path,
     }
     msg.debug("Execute", utils.format_json(args))
     args[5] = key
@@ -228,7 +219,7 @@ function llm_subtrans_translate()
     -- monitor output file
     local output_file_size = 0
     timer = mp.add_periodic_timer(5, function ()
-        local stats = utils.file_info(output_path)
+        local stats = utils.file_info(srt_path)
         if stats == nil then
             return
         end
@@ -238,7 +229,7 @@ function llm_subtrans_translate()
                 msg.info("Set tranlsated substitles")
                 mp.command_native({
                     name="sub-add",
-                    url=output_path,
+                    url=srt_path,
                     title="Translated",
                 })
             else
