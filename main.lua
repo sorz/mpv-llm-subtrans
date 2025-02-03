@@ -82,8 +82,11 @@ function llm_subtrans_translate()
 
     -- show osd
     local ov = mp.create_osd_overlay("ass-events")
-    ov.data = "{\\b1}{\\fs28}Subtitle translating…"
-    ov:update()
+    local function show(msg)
+        ov.data = "{\\b1}{\\fs32}LLM SubTrans{\\b0} - " .. msg
+        ov:update()
+    end
+    show("checking")
 
     -- function to reset state
     local timer = nil
@@ -176,6 +179,7 @@ function llm_subtrans_translate()
     local video_url = mp.get_property("path")
 
     -- set file path
+    show("initializing")
     local output_dir = mp.command_native({"expand-path", options.output_dir})
     local srt_path = output_dir .. "/" .. mp.get_property("filename/no-ext") .. ".srt"
     local ipc_path = output_dir .. "/.progress"
@@ -231,6 +235,7 @@ function llm_subtrans_translate()
         if rpc_file == nil then
             rpc_file = io.open(ipc_path, "r")
             if rpc_file == nil then return end
+            show("waiting")
         end
         -- read progress from rpc file
         rpc_file:seek("set")
@@ -257,7 +262,6 @@ function llm_subtrans_translate()
             local old_sub_end_pos = last_progress["last_timestamp_millis"][2]
             local new_sub_start_pos = progress["last_timestamp_millis"][1]
             local pos = mp.get_property_native("time-pos", 0) * 1000
-            print("old", old_sub_end_pos, "new", new_sub_start_pos, "pos", pos)
             -- condition 1/2: run out of dialogous
             if old_sub_end_pos - pos < CHECK_INTERVAL_SECS * 2 * 1000 then
                 -- condition 2/2: new file coverd current play position
@@ -270,11 +274,15 @@ function llm_subtrans_translate()
         end
 
         -- update progress
-        local total_ms = mp.get_property("duration/full") * 1000
-        local current_ms = progress["last_timestamp_millis"][2]
-        -- TODO: show progress in OSD
-        print("current", current_ms, "total", total_ms)
-        print(string.format("prog %d%%", current_ms / total_ms * 100))
+        local total_sec = mp.get_property_native("duration/full", nil)
+        local pos_sec = progress["last_timestamp_millis"][2] / 1000
+        if total_sec == nil then
+            show("translating")
+        elseif pos_sec >= total_sec then
+            show("finishing")
+        else
+            show(string.format("%d%%", pos_sec / total_sec * 100))
+        end
     end)
 
 end
