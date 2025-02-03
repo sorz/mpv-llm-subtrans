@@ -16,7 +16,7 @@ PROMPT = """\
 User will input content of SubRip (SRT) subtitles, with timestamp lines \
 removed to save tokens. You need to translate these dialogues into \
 {dest_lang}, and return in the same format, plaintext without markdown. \
-Keep formatting tags (e.g. <i>, <font>) not touch.
+Keep formatting tags (e.g. <i>) not touch.
 
 For reference, filename of this video is "{filename}".
 """
@@ -47,47 +47,28 @@ class Args:
     output_path: str
 
 
-@dataclass
-class SubtitleText:
-    """Separate text & font from each subtitle text line.
-    <font> are commonly wrapped around every lines for ASS-converted SubRip.
-    Trimming out them saves a lot of tokens.
-    """
-
-    text: str
-    font: Optional[str] = None
-
-    @staticmethod
-    def parse(raw_text: str) -> "SubtitleText":
-        # Only handle the most common case (one <font> for the entire line).
-        # Others won't eat many tokens if they are rare anyway.
-        match = re.match(r"<font ([^>]+)>(.+)</font>", raw_text)
-        if match is None:
-            return SubtitleText(raw_text)
-        return SubtitleText(font=match.group(1), text=match.group(2))
-
-    def __str__(self) -> str:
-        if self.font is None:
-            return self.text
-        else:
-            return f"<font {self.font}>{self.text}</font>"
-
-
-@dataclass
+@dataclass(frozen=True)
 class SubtitleLine:
     seq: int
     time_line: str
-    text_lines: list[SubtitleText]
+    text_lines: list[str]
 
-    def format_tiny(self) -> str:
-        """SRT dialogus without timestamp line or font tag"""
-        body = "\n".join(l.text for l in self.text_lines)
+    def format_without_time(self) -> str:
+        """SRT dialogus without timestamp line"""
+        body = "\n".join(self.text_lines)
         return f"{self.seq}\n{body}"
 
     def format_full(self) -> str:
-        """SRT dialogus with timestamp and font tag"""
-        body = "\n".join(f"{l}" for l in self.text_lines)
+        """SRT dialogus with timestamp"""
+        body = "\n".join(self.text_lines)
         return f"{self.seq}\n{self.time_line}\n{body}"
+
+    def strip_font_tags(self) -> "SubtitleLine":
+        return SubtitleLine(
+            seq=self.seq,
+            time_line=self.time_line,
+            text_lines=[re.sub(r"<font[^>]+>|</font>", "", l) for l in self.text_lines],
+        )
 
 
 def extract_subtitle(
@@ -116,10 +97,10 @@ def extract_subtitle(
             line = line.strip()
             # parse seq
             if seq is None:
-                if line.isdigit():
+                try:
                     seq = int(line)
-                else:
-                    logging.warning("expect seq num, found `%s`", line)
+                except ValueError as err:
+                    logging.warning("expect seq num, found `%s` (%s)", line, err)
                 continue
             # parse time line
             if time_line is None:
@@ -136,7 +117,7 @@ def extract_subtitle(
                 time_line = None
                 text_lines = []
             else:
-                text_lines.append(SubtitleText.parse(line))
+                text_lines.append(line)
 
 
 def iter_take[T](iter: Iterator[T], num: int) -> Iterator[T]:
@@ -223,15 +204,7 @@ class RespBuf:
         if self.endswith_empty_line():
             self._line_buf.pop()
         lines = [l.strip() for l in self._line_buf[1:]]
-        if len(src.text_lines) != len(lines):
-            logging.warning("text lines mismatched, formating ignored")
-            text_lines = [SubtitleText(l) for l in lines]
-        else:
-            text_lines = [
-                SubtitleText(text, orig.font)
-                for orig, text in zip(src.text_lines, lines)
-            ]
-        return SubtitleLine(seq, src.time_line, text_lines)
+        return SubtitleLine(seq, src.time_line, lines)
 
     def __bool__(self):
         return bool(self._line_buf)
@@ -244,7 +217,9 @@ def translate_subtitle_batch(
     batch_lines: list[SubtitleLine],
 ) -> Iterator[SubtitleLine]:
     # send request
-    user_prompt = "\n\n".join(l.format_tiny() for l in batch_lines)
+    user_prompt = "\n\n".join(
+        l.strip_font_tags().format_without_time() for l in batch_lines
+    )
     stream = openai.chat.completions.create(
         model=model,
         stream=True,
