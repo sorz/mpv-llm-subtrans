@@ -12,6 +12,9 @@ local options = {
     output_dir = "~~cache/llm_subtrans_subtitles", -- where to put translated srt files
 }
 
+local ASS_COLOR_RED = "{\\c&H8899FF&}"
+local ASS_COLOR_GREEN = "{\\c&H99FF88&}"
+
 local function check_python_version(bin)
     local ret = mp.command_native({
         name="subprocess",
@@ -90,7 +93,7 @@ function llm_subtrans_translate()
         if delay_secs == nil or delay_secs == 0 then
             ov:remove()
         else
-            mp.add_timeout(5,  function ()
+            mp.add_timeout(delay_secs, function ()
                 ov:remove()
             end)
         end
@@ -103,10 +106,10 @@ function llm_subtrans_translate()
     local function abort(error)
         if error ~= nil then
             msg.warn("Translate abort:", error)
-            show("{\\c&H8899FF&}" .. error)
+            show(ASS_COLOR_RED .. error)
             remove_ov(5)
         else
-            remove_ov()
+            remove_ov(3)
         end
         running = false
         py_handle = nil
@@ -253,8 +256,7 @@ function llm_subtrans_translate()
             return abort("failed to execute command: " .. error)
         end
         if result.killed_by_us then
-            show("{\\c&H8899FF&}cancelled")
-            remove_ov(3)
+            show(ASS_COLOR_RED .. "cancelled")
             return abort()
         end
         if result.status ~= 0 then
@@ -266,8 +268,7 @@ function llm_subtrans_translate()
             end
         end
         mp.command_native({name="sub-reload"})
-        show("{\\c&H99FF88&}all done")
-        remove_ov(3)
+        show(ASS_COLOR_GREEN .. "all done")
         abort()
     end)
 
