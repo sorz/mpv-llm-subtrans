@@ -86,6 +86,15 @@ function llm_subtrans_translate()
         ov.data = "{\\b1}{\\fs32}LLM SubTrans{\\b0} - " .. msg
         ov:update()
     end
+    local function remove_ov(delay_secs)
+        if delay_secs == nil or delay_secs == 0 then
+            ov:remove()
+        else
+            mp.add_timeout(5,  function ()
+                ov:remove()
+            end)
+        end
+    end
     show("checking")
 
     -- function to reset state
@@ -94,9 +103,11 @@ function llm_subtrans_translate()
     local function abort(error)
         if error ~= nil then
             msg.warn("Translate abort:", error)
-            mp.osd_message("Translate failed: " .. error)
+            show("{\\c&H8899FF&}" .. error)
+            remove_ov(5)
+        else
+            remove_ov()
         end
-        ov:remove()
         running = false
         py_handle = nil
         if timer ~= nil then
@@ -182,8 +193,19 @@ function llm_subtrans_translate()
     show("initializing")
     local output_dir = mp.command_native({"expand-path", options.output_dir})
     local srt_path = output_dir .. "/" .. mp.get_property("filename/no-ext") .. ".srt"
-    local ipc_path = output_dir .. "/.progress"
     msg.info("Save file to", srt_path)
+
+    -- set ipc file
+    local ipc_path = output_dir .. "/.progress"
+    os.remove(ipc_path)
+    local function read_panic_msg()
+        -- read {panic: "msg"} from ipc file
+        local ipc = io.open(ipc_path, "r");
+        if ipc == nil then return nil end
+        local state = utils.parse_json(ipc:read("*a"))
+        if state == nil then return nil end
+        return state["panic"]
+    end
 
     -- execute subtrans.py
     local script_dir = mp.get_script_directory()
@@ -211,19 +233,26 @@ function llm_subtrans_translate()
         args=args,
         playback_only=false,
     }, function (success, result, error)
-        msg.debug("Python script exit:", utils.format_json(result))
+        msg.info("Python script exit:", utils.format_json(result))
         if not success then
             return abort("failed to execute command: " .. error)
         end
         if result.killed_by_us then
-            mp.osd_message("Translate cancelled")
+            show("{\\c&H8899FF&}cancelled")
+            remove_ov(3)
             return abort()
         end
         if result.status ~= 0 then
-            return abort("script exit with " .. result.status .. " " .. result.error_string)
+            local panic = read_panic_msg()
+            if panic ~= nil then
+                return abort(panic)
+            else
+                return abort("script exit with " .. result.status .. " " .. result.error_string)
+            end
         end
-        mp.osd_message("Substitle translate done")
         mp.command_native({name="sub-reload"})
+        show("{\\c&H99FF88&}all done")
+        remove_ov(3)
         abort()
     end)
 

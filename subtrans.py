@@ -7,7 +7,7 @@ import argparse
 from pathlib import Path
 from dataclasses import dataclass
 from subprocess import Popen, PIPE
-from typing import Iterator, NotRequired, Optional, TypedDict
+from typing import Iterator, NotRequired, Optional, TextIO, TypedDict
 
 from openai import OpenAI
 
@@ -34,20 +34,6 @@ OPENAI_DEFAULT = PlatformOpts("gpt-4o-mini")
 DEEPSEEK_DEFAULT = PlatformOpts(
     model="deepseek-chat", base_url="https://api.deepseek.com/v1"
 )
-
-
-@dataclass
-class Args:
-    key: str
-    model: str
-    base_url: str
-    ffmpeg_bin: str
-    video_url: str
-    sub_track_id: int
-    dest_lang: str
-    batch_size: int
-    output_path: str
-    ipc_path: str
 
 
 @dataclass(frozen=True)
@@ -136,6 +122,9 @@ def extract_subtitle(
                 text_lines = []
             else:
                 text_lines.append(line)
+        ret = proc.wait()
+        if ret != 0:
+            raise RuntimeError(f"ffmpeg exit with {ret}")
 
 
 def iter_take[T](iter: Iterator[T], num: int) -> Iterator[T]:
@@ -272,13 +261,50 @@ def translate_subtitle_batch(
             buf.reset()
 
 
-class Progress(TypedDict):
-    last_seq: int
-    last_timestamp_millis: tuple[int, int]
+@dataclass
+class Args:
+    key: str
+    model: str
+    base_url: str
+    ffmpeg_bin: str
+    video_url: str
+    sub_track_id: int
+    dest_lang: str
+    batch_size: int
+    output_path: str
+    ipc_path: str
+
+    def build_openai_client(self) -> tuple[OpenAI, str]:
+        if re.fullmatch(RE_KEY_OPENAI, self.key):
+            base_url = OPENAI_DEFAULT.base_url
+            model = OPENAI_DEFAULT.model
+        elif re.fullmatch(RE_KEY_DEEPSEEK, self.key):
+            base_url = DEEPSEEK_DEFAULT.base_url
+            model = DEEPSEEK_DEFAULT.model
+        else:
+            base_url = None
+            model = None
+        if self.model:
+            model = self.model
+        if model is None:
+            raise ValueError("No model specified")
+        if self.base_url:
+            base_url = self.base_url
+        return OpenAI(api_key=self.key, base_url=base_url), model
+
+    @property
+    def dest_lang_with_default(self) -> str:
+        if not self.dest_lang:
+            loc, _ = locale.getlocale()
+            if loc is None or loc == "C":
+                return "English"
+            else:
+                return loc
+        else:
+            return self.dest_lang
 
 
-def main():
-    logging.basicConfig(level=logging.INFO)
+def get_cli_args() -> Args:
     parser = argparse.ArgumentParser(
         prog="mpv-llm-subtrans",
         description="MPV plugin for translating subtitles with LLM",
@@ -298,47 +324,30 @@ def main():
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--output-path", required=True)
     parser.add_argument("--ipc-path", required=True)
-    args = Args(**vars(parser.parse_args()))
+    return Args(**vars(parser.parse_args()))
 
-    # Set dest_lang
-    dest_lang = args.dest_lang
-    if not dest_lang:
-        loc, _ = locale.getlocale()
-        if loc is None or loc == "C":
-            dest_lang = "English"
-        else:
-            dest_lang = loc
-    logging.info("Target language: %s", dest_lang)
+
+class Progress(TypedDict):
+    last_seq: int
+    last_timestamp_millis: tuple[int, int]
+
+
+def process(args: Args, ipc: TextIO):
+    openai, model = args.build_openai_client()
+    logging.info("Target language: %s", args.dest_lang)
+    logging.info("Model: %s", model)
 
     # Extract subtitle with ffmpeg (async)
     subtitle_lines = extract_subtitle(
         args.ffmpeg_bin, args.video_url, args.sub_track_id
     )
 
-    # Build OpenAI client
-    if re.fullmatch(RE_KEY_OPENAI, args.key):
-        base_url = OPENAI_DEFAULT.base_url
-        model = OPENAI_DEFAULT.model
-    elif re.fullmatch(RE_KEY_DEEPSEEK, args.key):
-        base_url = DEEPSEEK_DEFAULT.base_url
-        model = DEEPSEEK_DEFAULT.model
-    else:
-        base_url = None
-        model = None
-    if args.model:
-        model = args.model
-    if args.base_url:
-        base_url = args.base_url
-    if model is None:
-        raise ValueError("No model specified")
-    openai = OpenAI(api_key=args.key, base_url=base_url)
-
     # Translate (async)
     translated = translate_subtitle(
         openai=openai,
         model=model,
         batch_size=args.batch_size,
-        dest_lang=dest_lang,
+        dest_lang=args.dest_lang,
         filename=Path(args.video_url).stem,
         lines=subtitle_lines,
     )
@@ -351,24 +360,32 @@ def main():
     logging.info("Write to %s", srt_path.resolve())
 
     with srt_path.open("w", encoding="utf-8") as srt:
-        with ipc_path.open("w") as ipc:
-            for line in translated:
-                srt.write(line.format_full())
-                srt.write("\n\n")
-                srt.flush()
+        for line in translated:
+            srt.write(line.format_full())
+            srt.write("\n\n")
+            srt.flush()
 
-                try:
-                    ipc.seek(0)
-                    json.dump(
-                        Progress(
-                            last_seq=line.seq,
-                            last_timestamp_millis=line.timestamp_millis,
-                        ),
-                        ipc,
-                    )
-                    ipc.truncate()
-                except (ValueError, IOError) as err:
-                    logging.warning("failed to update progress: %s", err)
+            ipc.seek(0)
+            json.dump(
+                Progress(
+                    last_seq=line.seq,
+                    last_timestamp_millis=line.timestamp_millis,
+                ),
+                ipc,
+            )
+            ipc.truncate()
+
+
+def main():
+    logging.basicConfig(level=logging.INFO)
+    args = get_cli_args()
+
+    with open(args.ipc_path, "w") as ipc:
+        try:
+            process(args, ipc)
+        except Exception as err:
+            json.dump(dict(panic=f"{err}"), ipc)
+            raise err
 
 
 if __name__ == "__main__":
