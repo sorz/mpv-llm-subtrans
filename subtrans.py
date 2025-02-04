@@ -7,20 +7,27 @@ import argparse
 from pathlib import Path
 from dataclasses import dataclass
 from subprocess import Popen, PIPE
-from typing import Iterator, NotRequired, Optional, TextIO, TypedDict
+from typing import IO, Any, Iterator, NotRequired, Optional, TextIO, TypedDict
 
 from openai import OpenAI
 
 
 RE_KEY_OPENAI = r"sk-\w+T3BlbkFJ\w+"  # T3BlbkFJ = base64("OpenAI")
 RE_KEY_DEEPSEEK = r"TODO"
-PROMPT = """\
+PROMPT_DEV = """\
 User will input content of SubRip (SRT) subtitles, with timestamp lines \
 removed to save tokens. You need to translate these dialogues into \
 {dest_lang}, and return in the same format, plaintext without markdown. \
 Keep formatting tags (e.g. <i>) not touch.
 
-For reference, filename of this video is "{filename}".
+Metadata such as video name may prepend for reference. Do not include them \
+in your response. \
+"""
+PROMPT_USER = """\
+Video file name: {video_name}
+Subtitle file name: {subtitle_name}
+------
+{srt_content}
 """
 
 
@@ -75,7 +82,38 @@ class SubtitleLine:
         return ts[0], ts[1]
 
 
-def extract_subtitle(
+def parse_subtitle(input: IO[str]) -> Iterator[SubtitleLine]:
+    seq = None
+    time_line = None
+    text_lines = []
+    for line in input:
+        line = line.strip()
+        # parse seq
+        if seq is None:
+            try:
+                seq = int(line)
+            except ValueError as err:
+                logging.warning("expect seq num, found `%s` (%s)", line, err)
+            continue
+        # parse time line
+        if time_line is None:
+            if "-->" in line:
+                time_line = line
+            else:
+                logging.warning("expect time, found `%s`", line)
+            continue
+        # parse text lines
+        if not line:
+            # dialogue end
+            yield SubtitleLine(seq, time_line, text_lines)
+            seq = None
+            time_line = None
+            text_lines = []
+        else:
+            text_lines.append(line)
+
+
+def extract_subtitle_from_video(
     ffmpeg_bin: str, video_url: str, sub_track_id: int
 ) -> Iterator[SubtitleLine]:
     args = [
@@ -94,37 +132,15 @@ def extract_subtitle(
     logging.info("Execute %s", " ".join(args))
     with Popen(args, stdout=PIPE, encoding="utf-8") as proc:
         assert proc.stdout is not None
-        seq = None
-        time_line = None
-        text_lines = []
-        for line in proc.stdout:
-            line = line.strip()
-            # parse seq
-            if seq is None:
-                try:
-                    seq = int(line)
-                except ValueError as err:
-                    logging.warning("expect seq num, found `%s` (%s)", line, err)
-                continue
-            # parse time line
-            if time_line is None:
-                if "-->" in line:
-                    time_line = line
-                else:
-                    logging.warning("expect time, found `%s`", line)
-                continue
-            # parse text lines
-            if not line:
-                # dialogue end
-                yield SubtitleLine(seq, time_line, text_lines)
-                seq = None
-                time_line = None
-                text_lines = []
-            else:
-                text_lines.append(line)
+        yield from parse_subtitle(proc.stdout)
         ret = proc.wait()
         if ret != 0:
             raise RuntimeError(f"ffmpeg exit with {ret}")
+
+
+def read_subtitle_from_srt(path: str) -> Iterator[SubtitleLine]:
+    with open(path, encoding="utf-8") as f:
+        yield from parse_subtitle(f)
 
 
 def iter_take[T](iter: Iterator[T], num: int) -> Iterator[T]:
@@ -141,18 +157,21 @@ def translate_subtitle(
     model: str,
     batch_size: int,
     dest_lang: str,
-    filename: str,
+    video_name: str,
+    subtitle_name: str,
     lines: Iterator[SubtitleLine],
 ) -> Iterator[SubtitleLine]:
-    dev_prompt = PROMPT.format(
+    prompt_vars = dict(
         dest_lang=dest_lang,
-        filename=filename,
+        video_name=video_name,
+        subtitle_name=subtitle_name,
     )
+    prompt_dev = PROMPT_DEV.format(**prompt_vars)
     batch_count = 0
     batch = list(iter_take(lines, batch_size))
     while batch:
         translated_count = 0
-        items = translate_subtitle_batch(openai, model, dev_prompt, batch)
+        items = translate_subtitle_batch(openai, model, prompt_dev, prompt_vars, batch)
         try:
             for item in items:
                 translated_count += 1
@@ -220,18 +239,22 @@ class RespBuf:
 def translate_subtitle_batch(
     openai: OpenAI,
     model: str,
-    dev_prompt: str,
+    prompt_dev: str,
+    prompt_vars: dict[str, Any],
     batch_lines: list[SubtitleLine],
 ) -> Iterator[SubtitleLine]:
     # send request
-    user_prompt = "\n\n".join(
-        l.strip_font_tags().format_without_time() for l in batch_lines
+    user_prompt = PROMPT_USER.format(
+        srt_content="\n\n".join(
+            l.strip_font_tags().format_without_time() for l in batch_lines
+        ),
+        **prompt_vars,
     )
     stream = openai.chat.completions.create(
         model=model,
         stream=True,
         messages=[
-            {"role": "developer", "content": dev_prompt},
+            {"role": "developer", "content": prompt_dev},
             {"role": "user", "content": user_prompt},
         ],
     )
@@ -269,6 +292,7 @@ class Args:
     ffmpeg_bin: str
     video_url: str
     sub_track_id: int
+    subtitle_url: str
     dest_lang: str
     batch_size: int
     output_path: str
@@ -320,6 +344,9 @@ def get_cli_args() -> Args:
         type=int,
         help="track id of subtitle, start from 0",
     )
+    parser.add_argument(
+        "--subtitle-url", default="", help="standalone subtitle file path"
+    )
     parser.add_argument("--dest-lang", default="", help="Destination language")
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--output-path", required=True)
@@ -337,10 +364,14 @@ def process(args: Args, ipc: TextIO):
     logging.info("Target language: %s", args.dest_lang)
     logging.info("Model: %s", model)
 
-    # Extract subtitle with ffmpeg (async)
-    subtitle_lines = extract_subtitle(
-        args.ffmpeg_bin, args.video_url, args.sub_track_id
-    )
+    if args.subtitle_url:
+        # Use standalone srt file
+        subtitle_lines = read_subtitle_from_srt(args.subtitle_url)
+    else:
+        # Extract subtitle with ffmpeg (async)
+        subtitle_lines = extract_subtitle_from_video(
+            args.ffmpeg_bin, args.video_url, args.sub_track_id
+        )
 
     # Translate (async)
     translated = translate_subtitle(
@@ -348,7 +379,8 @@ def process(args: Args, ipc: TextIO):
         model=model,
         batch_size=args.batch_size,
         dest_lang=args.dest_lang,
-        filename=Path(args.video_url).stem,
+        video_name=Path(args.video_url).stem,
+        subtitle_name=Path(args.subtitle_url).stem,
         lines=subtitle_lines,
     )
 

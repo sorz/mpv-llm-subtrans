@@ -185,6 +185,20 @@ function llm_subtrans_translate()
     end
     msg.info("Select substitle track#" .. sub_track.id, sub_track.title)
 
+    local ext_sub_url = ""
+    if sub_track["external"] then
+        ext_sub_url = sub_track["external-filename"]
+        msg.info("External substitle " .. ext_sub_url)
+        if not ext_sub_url:match("%.srt$") then
+            -- TODO: support ass subtitle?
+            return abort("only support SubRip (.srt) for external subtitles")
+        end
+        if ext_sub_url:match("^https?://") then
+            -- TODO: support http substitle?
+            return abort("only support external subtitles from local file")
+        end
+    end
+
     -- gather metadata
     -- TODO: check video url protocol
     local video_url = mp.get_property("path")
@@ -220,6 +234,7 @@ function llm_subtrans_translate()
         "--base-url", options.base_url,
         "--ffmpeg-bin", options.ffmpeg_bin,
         "--video-url", video_url,
+        "--subtitle-url", ext_sub_url,
         "--sub-track-id", sub_track.id - 1 .. "",
         "--batch-size", options.batch_size .. "",
         "--dest-lang", options.dest_lang,
@@ -233,7 +248,7 @@ function llm_subtrans_translate()
         args=args,
         playback_only=false,
     }, function (success, result, error)
-        msg.info("Python script exit:", utils.format_json(result))
+        msg.debug("Python script exit:", utils.format_json(result))
         if not success then
             return abort("failed to execute command: " .. error)
         end
