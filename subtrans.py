@@ -180,10 +180,13 @@ def translate_subtitle(
             )
             if translated_count == 0:
                 logging.error("translate failure")
-                break
+                raise err
         logging.info(
             "translated %s dialogous in batch#%s", translated_count, batch_count
         )
+        if translated_count == 0:
+            # prevent infinite loop, just in case
+            raise RuntimeError("empty response from model")
         batch = batch[translated_count:]
         batch.extend(iter_take(lines, batch_size - len(batch)))
 
