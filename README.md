@@ -41,10 +41,11 @@ Some styles of ASS subtitles will be lost.
 ### Windows
 
 ```powershell
-# Install Python & FFmpeg to PATH
+# Before start, install Python & FFmpeg to PATH
 py -m pip install openai
 $env:OPENAI_API_KEY='sk-******'
 mpv --script=.\mpv-llm-subtrans video.mp4
+# Select the substitles you want to translate (if not the first one)
 # Press Alt-T on mpv window
 ```
 
@@ -54,6 +55,7 @@ mpv --script=.\mpv-llm-subtrans video.mp4
 sudo apt install ffmpeg python3-openai
 export OPENAI_API_KEY='sk-******'
 mpv --script=./mpv-llm-subtrans video.mp4
+# Select the substitles you want to translate (if not the first one)
 # Press Alt-T on mpv window
 ```
 
