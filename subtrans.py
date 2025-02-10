@@ -13,7 +13,7 @@ from openai import OpenAI
 
 
 RE_KEY_OPENAI = r"sk-\w+T3BlbkFJ\w+"  # T3BlbkFJ = base64("OpenAI")
-RE_KEY_DEEPSEEK = r"TODO"
+RE_KEY_DEEPSEEK = r"sk-[a-z0-9]{32}"
 PROMPT_DEV = """\
 User will input content of SubRip (SRT) subtitles, with timestamp lines \
 removed to save tokens. You need to translate these dialogues into \
