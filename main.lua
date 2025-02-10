@@ -10,6 +10,7 @@ local options = {
     ffmpeg_bin = "ffmpeg", -- path to ffmpeg execute
     batch_size = 50, -- number of dialogous send in one translate request
     output_dir = "~~cache/llm_subtrans_subtitles", -- where to put translated srt files
+    extra_prompt = "", -- append to developer prompt
     skip_env_check = false, -- fast start, skip prerequisites checking
 }
 
@@ -269,6 +270,7 @@ function llm_subtrans_translate()
         "--sub-track-id", sub_track.id - 1 .. "",
         "--batch-size", options.batch_size .. "",
         "--dest-lang", options.dest_lang,
+        "--extra-prompt", options.extra_prompt,
         "--output-path", srt_path,
         "--ipc-path", ipc_path,
     }

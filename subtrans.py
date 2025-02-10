@@ -21,7 +21,9 @@ removed to save tokens. You need to translate these dialogues into \
 Keep formatting tags (e.g. <i>) not touch.
 
 Metadata such as video name may prepend for reference. Do not include them \
-in your response. \
+in your response.
+
+{extra_prompt}\
 """
 PROMPT_USER = """\
 Video file name: {video_name}
@@ -156,16 +158,9 @@ def translate_subtitle(
     openai: OpenAI,
     model: str,
     batch_size: int,
-    dest_lang: str,
-    video_name: str,
-    subtitle_name: str,
+    prompt_vars: dict[str, Any],
     lines: Iterator[SubtitleLine],
 ) -> Iterator[SubtitleLine]:
-    prompt_vars = dict(
-        dest_lang=dest_lang,
-        video_name=video_name,
-        subtitle_name=subtitle_name,
-    )
     prompt_dev = PROMPT_DEV.format(**prompt_vars)
     batch_count = 0
     batch = list(iter_take(lines, batch_size))
@@ -297,6 +292,7 @@ class Args:
     batch_size: int
     output_path: str
     ipc_path: str
+    extra_prompt: str
 
     def build_openai_client(self) -> tuple[OpenAI, str]:
         if re.fullmatch(RE_KEY_OPENAI, self.key):
@@ -327,6 +323,15 @@ class Args:
         else:
             return self.dest_lang
 
+    @property
+    def prompt_vars(self) -> dict[str, Any]:
+        return dict(
+            dest_lang=self.dest_lang_with_default,
+            video_name=Path(self.video_url).stem,
+            subtitle_name=Path(self.subtitle_url).stem,
+            extra_prompt=self.extra_prompt,
+        )
+
 
 def get_cli_args() -> Args:
     parser = argparse.ArgumentParser(
@@ -351,6 +356,7 @@ def get_cli_args() -> Args:
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--output-path", required=True)
     parser.add_argument("--ipc-path", required=True)
+    parser.add_argument("--extra-prompt", default="")
     return Args(**vars(parser.parse_args()))
 
 
@@ -378,9 +384,7 @@ def process(args: Args, ipc: TextIO):
         openai=openai,
         model=model,
         batch_size=args.batch_size,
-        dest_lang=args.dest_lang_with_default,
-        video_name=Path(args.video_url).stem,
-        subtitle_name=Path(args.subtitle_url).stem,
+        prompt_vars=args.prompt_vars,
         lines=subtitle_lines,
     )
 
