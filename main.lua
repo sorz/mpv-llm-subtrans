@@ -10,10 +10,12 @@ local options = {
     ffmpeg_bin = "ffmpeg", -- path to ffmpeg execute
     batch_size = 50, -- number of dialogous send in one translate request
     output_dir = "~~cache/llm_subtrans_subtitles", -- where to put translated srt files
+    skip_env_check = false, -- fast start, skip prerequisites checking
 }
 
 local ASS_COLOR_RED = "{\\c&H8899FF&}"
 local ASS_COLOR_GREEN = "{\\c&H99FF88&}"
+local IS_WINDODWS = mp.get_property("vo-mmcss-profile") ~= nil  -- Windows only property
 
 local function check_python_version(bin)
     local ret = mp.command_native({
@@ -64,6 +66,37 @@ local function check_ffmpeg(bin)
     end
     msg.info("ffmpeg found:", ret.stdout:match("^([^-]+)"))
     return true
+end
+
+local function get_api_key()
+    local key = options.key
+    if key == "" then
+        local env = utils.get_env_list()
+        for _, kv in ipairs(env) do
+            local v = kv:match("^OPENAI_API_KEY=([%w%-]+)$")
+            if v ~= nil then
+                return v
+            end
+        end
+        return nil
+    else
+        return key
+    end
+end
+
+local function find_python_bin()
+    local bins = {"python3", "python"}
+    if IS_WINDODWS then
+        table.insert(bins, 1, "py")
+    end
+    for _, bin in ipairs(bins) do
+        local ok, _ = check_python_version(bin)
+        if ok then
+            msg.info("Python found as", bin)
+            return bin
+        end
+    end
+    return nil
 end
 
 local running = false
@@ -123,51 +156,46 @@ function llm_subtrans_translate()
     end
 
     -- check python
-    local python_bin = options.python_bin
+    ---@type string|nil
+    local python_bin= options.python_bin
     if python_bin == "" then
-        -- try to find on PATH
-        for _, bin in ipairs({"python3", "py"}) do
-            local ok, _ = check_python_version(bin)
-            if ok then
-                msg.info("Python found as", bin)
-                python_bin = bin
-                break
+        if options.skip_env_check then
+            -- just guess without checking
+            if IS_WINDODWS then
+                python_bin = "py"
+            else
+                python_bin = "python3"
+            end
+        else
+            -- guess & checking
+            python_bin = find_python_bin()
+            if python_bin == nil then
+                return abort("Python not found")
             end
         end
-        if python_bin == "" then
-            return abort("Python not found")
-        end
-    else
+    elseif not options.skip_env_check then
         local ok, err = check_python_version(python_bin)
         if not ok then
             return abort("Python not working: " .. err)
         end
     end
 
-    -- check python-openai
-    local ok, _ = check_python_openai(python_bin)
-    if not ok then
-        return abort("Python module `openai` not found")
-    end
+    if not options.skip_env_check then
+        -- check python-openai
+        local ok, _ = check_python_openai(python_bin)
+        if not ok then
+            return abort("Python module `openai` not found")
+        end
 
-    -- check ffmpeg
-    if not check_ffmpeg(options.ffmpeg_bin) then
-        return abort("`ffmpeg` not found")
+        -- check ffmpeg
+        if not check_ffmpeg(options.ffmpeg_bin) then
+            return abort("`ffmpeg` not found")
+        end
     end
 
     -- check key, the only required option
-    local key = options.key
-    if key == "" then
-        local env = utils.get_env_list()
-        for _, kv in ipairs(env) do
-            local v = kv:match("^OPENAI_API_KEY=([%w%-]+)$")
-            if v ~= nil then
-                key = v
-                break
-            end
-        end
-    end
-    if key == "" then
+    local key = get_api_key()
+    if key == nil then
         return abort("API key not found")
     end
 
