@@ -361,7 +361,7 @@ class Progress(TypedDict):
 
 def process(args: Args, ipc: TextIO):
     openai, model = args.build_openai_client()
-    logging.info("Target language: %s", args.dest_lang)
+    logging.info("Target language: %s", args.dest_lang_with_default)
     logging.info("Model: %s", model)
 
     if args.subtitle_url:
@@ -378,7 +378,7 @@ def process(args: Args, ipc: TextIO):
         openai=openai,
         model=model,
         batch_size=args.batch_size,
-        dest_lang=args.dest_lang,
+        dest_lang=args.dest_lang_with_default,
         video_name=Path(args.video_url).stem,
         subtitle_name=Path(args.subtitle_url).stem,
         lines=subtitle_lines,
