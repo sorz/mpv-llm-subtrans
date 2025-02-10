@@ -3,7 +3,7 @@ local msg = require 'mp.msg'
 
 local options = {
     dest_lang = "", -- the language you want, default to guess with system's language
-    key = "", -- default to read from environment variable OPENAI_API_KEY
+    api_key = "", -- default to read from environment variable OPENAI_API_KEY
     model = "",  -- default to use default model (gpt-4o-mini or deepseek-chat)
     base_url = "", -- default to guess from key (OpenAI or DeekSeek)
     python_bin = "", -- path to python, default to find `python3` & `py` from PATH
@@ -69,8 +69,8 @@ local function check_ffmpeg(bin)
 end
 
 local function get_api_key()
-    local key = options.key
-    if key == "" then
+    local api_key = options.api_key
+    if api_key == "" then
         local env = utils.get_env_list()
         for _, kv in ipairs(env) do
             local v = kv:match("^OPENAI_API_KEY=([%w%-]+)$")
@@ -80,7 +80,7 @@ local function get_api_key()
         end
         return nil
     else
-        return key
+        return api_key
     end
 end
 
@@ -194,8 +194,8 @@ function llm_subtrans_translate()
     end
 
     -- check key, the only required option
-    local key = get_api_key()
-    if key == nil then
+    local api_key = get_api_key()
+    if api_key == nil then
         return abort("API key not found")
     end
 
@@ -260,7 +260,7 @@ function llm_subtrans_translate()
     local py_script = script_dir .. "subtrans.py"
     local args = {
         python_bin, "-u", py_script,
-        "--key", key:sub(1, -32) .. "********", -- reset after being log
+        "--key", api_key:sub(1, -32) .. "********", -- reset after being log
         "--model", options.model,
         "--base-url", options.base_url,
         "--ffmpeg-bin", options.ffmpeg_bin,
@@ -273,7 +273,7 @@ function llm_subtrans_translate()
         "--ipc-path", ipc_path,
     }
     msg.debug("Execute", utils.format_json(args))
-    args[5] = key
+    args[5] = api_key
     py_handle = mp.command_native_async({
         name="subprocess",
         args=args,
