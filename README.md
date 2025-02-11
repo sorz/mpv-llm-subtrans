@@ -25,7 +25,7 @@ you got a slow HTTP connection.
 ### Why you SHOULD NOT use it
 
 This script was made for quick & convenience. If you need tweak the prompt,
-manual adjustment or editing, speech recognition, etc., use dedicated tools.
+manual adjustment or editing, transcription, etc., use dedicated tools.
 
 Some styles of ASS subtitles will be lost.
 
@@ -61,4 +61,17 @@ mpv --script=./mpv-llm-subtrans video.mp4
 
 ## Configurtion
 
-See [llm_subtrans.conf](llm_subtrans.conf)
+See [llm_subtrans.conf](llm_subtrans.conf).
+
+Put this file on `%APPDATA%\mpv\script-opts\` or `~/.config/mpv/script-opts/`.
+
+## Tips
+
+- The default key binding is `Alt+T`, press once to start,
+  press again to cancel.
+- You can watch while the translation is in progress. As long as the
+  translation progess (displayed in the upper left corner) exceeds your
+  playback progress, you will not miss a sentence.
+- All translated subsitles can be found at
+  `%LOCALAPPDATA%\mpv\cache\llm_subtrans_subtitles` or
+  `~/.cache/mpv/llm_subtrans_subtitles`.
