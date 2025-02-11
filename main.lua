@@ -363,5 +363,4 @@ function llm_subtrans_translate()
 end
 
 require "mp.options".read_options(options, "llm_subtrans")
-mp.add_key_binding('alt+t', llm_subtrans_translate)
-
+mp.add_key_binding('alt+t', "subtrans", llm_subtrans_translate)
