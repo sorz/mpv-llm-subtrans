@@ -393,9 +393,7 @@ def process(args: Args, ipc: TextIO):
 
     # Write out
     srt_path = Path(args.output_path)
-    ipc_path = Path(args.ipc_path)
     srt_path.parent.mkdir(parents=True, exist_ok=True)
-    ipc_path.parent.mkdir(parents=True, exist_ok=True)
     logging.info("Write to %s", srt_path.resolve())
 
     with srt_path.open("w", encoding="utf-8") as srt:
@@ -419,7 +417,9 @@ def main():
     logging.basicConfig(level=logging.INFO)
     args = get_cli_args()
 
-    with open(args.ipc_path, "w") as ipc:
+    ipc_path = Path(args.ipc_path)
+    ipc_path.parent.mkdir(parents=True, exist_ok=True)
+    with ipc_path.open('w') as ipc:
         try:
             process(args, ipc)
         except Exception as err:

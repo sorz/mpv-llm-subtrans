@@ -11,7 +11,7 @@ A [mpv player](https://mpv.io/) script.
   contextual understaning capabilities of LLM.
 - **Easy.** Few commands to install. Just setup your API key. One shortcut to start.
 
-Tested on Windows, other platform should work but not get tested yet.
+Tested on Windows & Ubuntu, other platform should work but not get tested yet.
 
 Both internal subtitle in video files and external subtitle files are supported.
 

@@ -258,7 +258,7 @@ function llm_subtrans_translate()
     if script_dir == nil then
         return abort("script not install as directory")
     end
-    local py_script = script_dir .. "subtrans.py"
+    local py_script = script_dir .. "/subtrans.py"
     local args = {
         python_bin, "-u", py_script,
         "--key", api_key:sub(1, -32) .. "********", -- reset after being log
