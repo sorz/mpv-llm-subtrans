@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "openai",
+# ]
+# ///
 import re
 import json
 import locale
@@ -7,7 +13,7 @@ import argparse
 from pathlib import Path
 from dataclasses import dataclass
 from subprocess import Popen, PIPE
-from typing import IO, Any, Iterator, NotRequired, Optional, TextIO, TypedDict
+from typing import IO, Any, Iterator, Optional, TextIO, TypedDict
 
 from openai import OpenAI
 
