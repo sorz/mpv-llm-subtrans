@@ -69,19 +69,25 @@ local function check_ffmpeg(bin)
     return true
 end
 
-local function get_api_key()
-    local api_key = options.api_key
-    if api_key == "" then
-        local env = utils.get_env_list()
-        for _, kv in ipairs(env) do
-            local v = kv:match("^OPENAI_API_KEY=([%w%-]+)$")
-            if v ~= nil then
-                return v
+local function get_env_with_api_key()
+    local env = utils.get_env_list()
+    local new_env_item = nil
+    if options.api_key ~= "" then
+        new_env_item = "OPENAI_API_KEY=" .. options.api_key
+    end
+    for i, kv in ipairs(env) do
+        if kv:match("^OPENAI_API_KEY=.*$") ~= nil then
+            if new_env_item ~= nil then
+                env[i] = new_env_item
             end
+            return env
         end
-        return nil
+    end
+    if new_env_item ~= nil then
+        table.insert(env, new_env_item)
+        return env;
     else
-        return api_key
+        return nil;
     end
 end
 
@@ -194,12 +200,6 @@ function llm_subtrans_translate()
         end
     end
 
-    -- check key, the only required option
-    local api_key = get_api_key()
-    if api_key == nil then
-        return abort("API key not found")
-    end
-
     -- select subtitle track
     local sub_track = mp.get_property_native("current-tracks/sub")
     if sub_track == nil then
@@ -253,6 +253,12 @@ function llm_subtrans_translate()
         return state["panic"]
     end
 
+    -- check api key & setup env vars
+    local env = get_env_with_api_key()
+    if env == nil then
+        return abort("API key not found")
+    end
+
     -- execute subtrans.py
     local script_dir = mp.get_script_directory()
     if script_dir == nil then
@@ -261,7 +267,6 @@ function llm_subtrans_translate()
     local py_script = script_dir .. "/subtrans.py"
     local args = {
         python_bin, "-u", py_script,
-        "--key", api_key:sub(1, -32) .. "********", -- reset after being log
         "--model", options.model,
         "--base-url", options.base_url,
         "--ffmpeg-bin", options.ffmpeg_bin,
@@ -275,10 +280,10 @@ function llm_subtrans_translate()
         "--ipc-path", ipc_path,
     }
     msg.debug("Execute", utils.format_json(args))
-    args[5] = api_key
     py_handle = mp.command_native_async({
         name="subprocess",
         args=args,
+        env=env,
         playback_only=false,
     }, function (success, result, error)
         msg.debug("Python script exit:", utils.format_json(result))

@@ -6,6 +6,7 @@
 # ]
 # ///
 import re
+import os
 import json
 import locale
 import logging
@@ -290,7 +291,6 @@ def translate_subtitle_batch(
 
 @dataclass
 class Args:
-    key: str
     model: str
     base_url: str
     ffmpeg_bin: str
@@ -304,10 +304,13 @@ class Args:
     extra_prompt: str
 
     def build_openai_client(self) -> tuple[OpenAI, str]:
-        if re.fullmatch(RE_KEY_OPENAI, self.key):
+        key = os.environ.get("OPENAI_API_KEY")
+        if not key:
+            raise KeyError("No OPENAI_API_KEY set")
+        if re.fullmatch(RE_KEY_OPENAI, key):
             base_url = OPENAI_DEFAULT.base_url
             model = OPENAI_DEFAULT.model
-        elif re.fullmatch(RE_KEY_DEEPSEEK, self.key):
+        elif re.fullmatch(RE_KEY_DEEPSEEK, key):
             base_url = DEEPSEEK_DEFAULT.base_url
             model = DEEPSEEK_DEFAULT.model
         else:
@@ -319,7 +322,7 @@ class Args:
             raise ValueError("No model specified")
         if self.base_url:
             base_url = self.base_url
-        return OpenAI(api_key=self.key, base_url=base_url), model
+        return OpenAI(api_key=key, base_url=base_url), model
 
     @property
     def dest_lang_with_default(self) -> str:
@@ -347,7 +350,6 @@ def get_cli_args() -> Args:
         prog="mpv-llm-subtrans",
         description="MPV plugin for translating subtitles with LLM",
     )
-    parser.add_argument("--key", default="", help="API key")
     parser.add_argument("--model", default="", help="Model name")
     parser.add_argument("--base-url", default="", help="API base URL")
     parser.add_argument("--ffmpeg-bin", default="", help="ffmpeg execute path")
@@ -425,7 +427,7 @@ def main():
 
     ipc_path = Path(args.ipc_path)
     ipc_path.parent.mkdir(parents=True, exist_ok=True)
-    with ipc_path.open('w') as ipc:
+    with ipc_path.open("w") as ipc:
         try:
             process(args, ipc)
         except Exception as err:
