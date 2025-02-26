@@ -6,7 +6,7 @@ local options = {
     api_key = "", -- default to read from environment variable OPENAI_API_KEY
     model = "",  -- default to use default model (gpt-4o-mini or deepseek-chat)
     base_url = "", -- default to guess from key (OpenAI or DeekSeek)
-    python_bin = "", -- path to python, default to find `python3` & `py` from PATH
+    python_bin = "", -- path to python or uv, default to find `uv`, `python3` & `py` from PATH
     ffmpeg_bin = "ffmpeg", -- path to ffmpeg execute
     batch_size = 50, -- number of dialogous send in one translate request
     output_dir = "~~cache/llm_subtrans_subtitles", -- where to put translated srt files
@@ -18,6 +18,8 @@ local ASS_COLOR_RED = "{\\c&H8899FF&}"
 local ASS_COLOR_GREEN = "{\\c&H99FF88&}"
 local IS_WINDODWS = mp.get_property("vo-mmcss-profile") ~= nil  -- Windows only property
 
+--- Check python (python, py, or uv) version
+-- @return boolean, "python" | "uv" | error_string
 local function check_python_version(bin)
     local ret = mp.command_native({
         name="subprocess",
@@ -32,11 +34,15 @@ local function check_python_version(bin)
             return false, bin .. " exit with error code " .. ret.status
         end
     end
-    local ver1, ver2 = ret.stdout:match("^Python (%d+)%.(%d+)")
+    local name, ver1, ver2 = ret.stdout:match("^(%w+) (%d+)%.(%d+)")
+    if name == "uv" then
+        -- do not check version of uv
+        return true, "uv"
+    end
     if ver1 ~= "3" or tonumber(ver2) < 8 then
         return false, "Python version " .. ver1 .. "." .. ver2 .. " not supported"
     end
-    return true
+    return true, "python"
 end
 
 local function check_python_openai(python_bin)
@@ -91,19 +97,63 @@ local function get_env_with_api_key()
     end
 end
 
-local function find_python_bin()
-    local bins = {"python3", "python"}
-    if IS_WINDODWS then
-        table.insert(bins, 1, "py")
+--- Find compatible python (or uv) execute
+-- @param candidates arrays of candidates, or nil
+-- @return (path, "python" | "uv") | nil
+local function find_python_bin(candidates)
+    if candidates == nil and IS_WINDODWS then
+        candidates = {"uv", "py", "python"}
+    elseif candidates == nil then
+        candidates = {"uv", "python3", "python"}
     end
-    for _, bin in ipairs(bins) do
-        local ok, _ = check_python_version(bin)
+    for _, bin in ipairs(candidates) do
+        local ok, py_type = check_python_version(bin)
         if ok then
             msg.info("Python found as", bin)
-            return bin
+            return bin, py_type
         end
     end
     return nil
+end
+
+--- Find & build python exec args list
+--@return (string array, "python" | "uv") | nil
+local function get_python_exec_args()
+    -- get python execute path & type
+    local python_bin = options.python_bin
+    local py_type
+    if options.skip_env_check then
+        if python_bin == "" then
+            -- use uv by default
+            python_bin = "uv"
+        end
+        -- guess type by name
+        if python_bin:match("[\\/]?uv[^\\/]*$") == nil then
+            py_type = "uv"
+        else
+            py_type = "python"
+        end
+    else
+        -- find python bin
+        local candidates = nil
+        if python_bin ~= "" then
+            candidates = {python_bin}
+        end
+        local bin, type = find_python_bin(candidates)
+        if bin == nil or type == nil then
+            return nil
+        end
+        python_bin, py_type = bin, type
+    end
+
+    -- build args
+    if py_type == "python" then
+        return {python_bin, "-u"}, py_type
+    elseif py_type == "uv" then
+        return {python_bin, "run",}, py_type
+    else
+        return {python_bin}, py_type
+    end
 end
 
 local running = false
@@ -163,38 +213,21 @@ function llm_subtrans_translate()
     end
 
     -- check python
-    ---@type string|nil
-    local python_bin= options.python_bin
-    if python_bin == "" then
-        if options.skip_env_check then
-            -- just guess without checking
-            if IS_WINDODWS then
-                python_bin = "py"
-            else
-                python_bin = "python3"
-            end
-        else
-            -- guess & checking
-            python_bin = find_python_bin()
-            if python_bin == nil then
-                return abort("Python not found")
-            end
-        end
-    elseif not options.skip_env_check then
-        local ok, err = check_python_version(python_bin)
-        if not ok then
-            return abort("Python not working: " .. err)
-        end
+    local py_args, py_type = get_python_exec_args()
+    if py_args == nil or py_type == nil then
+        return abort("Python not found")
     end
 
-    if not options.skip_env_check then
-        -- check python-openai
-        local ok, _ = check_python_openai(python_bin)
+    -- check python-openai
+    if not options.skip_env_check and py_type == "python" then
+        local ok, _ = check_python_openai(py_args[1])
         if not ok then
             return abort("Python module `openai` not found")
         end
+    end
 
-        -- check ffmpeg
+    -- check ffmpeg
+    if not options.skip_env_check then
         if not check_ffmpeg(options.ffmpeg_bin) then
             return abort("`ffmpeg` not found")
         end
@@ -238,11 +271,11 @@ function llm_subtrans_translate()
     -- set file path
     show("initializing")
     local output_dir = mp.command_native({"expand-path", options.output_dir})
-    local srt_path = output_dir .. "/" .. mp.get_property("filename/no-ext") .. ".srt"
+    local srt_path = utils.join_path(output_dir, mp.get_property("filename/no-ext") .. ".srt")
     msg.info("Save file to", srt_path)
 
     -- set ipc file
-    local ipc_path = output_dir .. "/.progress"
+    local ipc_path = utils.join_path(output_dir, ".progress")
     os.remove(ipc_path)
     local function read_panic_msg()
         -- read {panic: "msg"} from ipc file
@@ -264,9 +297,9 @@ function llm_subtrans_translate()
     if script_dir == nil then
         return abort("script not install as directory")
     end
-    local py_script = script_dir .. "/subtrans.py"
-    local args = {
-        python_bin, "-u", py_script,
+    local py_script = utils.join_path(script_dir, "subtrans.py")
+    local tail_args = {
+        py_script,
         "--model", options.model,
         "--base-url", options.base_url,
         "--ffmpeg-bin", options.ffmpeg_bin,
@@ -279,10 +312,13 @@ function llm_subtrans_translate()
         "--output-path", srt_path,
         "--ipc-path", ipc_path,
     }
-    msg.debug("Execute", utils.format_json(args))
+    for _, v in ipairs(tail_args) do
+        table.insert(py_args, v)
+    end
+    msg.debug("Execute", utils.format_json(py_args))
     py_handle = mp.command_native_async({
         name="subprocess",
-        args=args,
+        args=py_args,
         env=env,
         playback_only=false,
     }, function (success, result, error)
