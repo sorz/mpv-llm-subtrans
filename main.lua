@@ -384,9 +384,9 @@ function llm_subtrans_translate()
                 if new_sub_start_pos > pos then
                     msg.info("Reload translated subtitles")
                     mp.command_native({name="sub-reload"})
-                    last_progress = progress
                 end
             end
+            last_progress = progress
         end
 
         -- update progress
