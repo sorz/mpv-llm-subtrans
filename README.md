@@ -32,9 +32,10 @@ Some styles of ASS subtitles will be lost.
 ## Prerequisites
 
 - [FFmpeg](https://www.ffmpeg.org/)
-- [Python](https://python.org)
-- [openai-python](https://github.com/openai/openai-python)
 - [OpenAI](https://platform.openai.com/api-keys) or [DeepSeek](https://platform.deepseek.com/api_keys) API key
+- [uv](https://github.com/astral-sh/uv); or
+  - [Python](https://python.org)
+  - [openai-python](https://github.com/openai/openai-python)
 
 ## Quick start
 
@@ -48,6 +49,8 @@ mpv --script=.\mpv-llm-subtrans video.mp4
 # Select the substitles you want to translate (if not the first one)
 # Press Alt-T on mpv window
 ```
+
+Note: if you have `uv` installed on Windows, make sure mpv is v0.39 or above.
 
 ### Ubuntu
 

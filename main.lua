@@ -102,9 +102,7 @@ end
 -- @return (path, "python" | "uv") | nil
 local function find_python_bin(candidates)
     if candidates == nil and IS_WINDODWS then
-        -- FIXME: uv seems broken on Windows (failed to spawn `python`, invalid handle)
-        -- When fixed, prioritize uv
-        candidates = {"py", "python", "uv"}
+        candidates = {"uv", "py", "python"}
     elseif candidates == nil then
         candidates = {"uv", "python3", "python"}
     end
