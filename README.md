@@ -1,6 +1,6 @@
 # llm-subtrans
 
-Translate video subtitles with OpenAI or DeepSeek's language model.
+Translate video subtitles with OpenAI(-compatible) language models.
 A [mpv player](https://mpv.io/) script.
 
 ## Features

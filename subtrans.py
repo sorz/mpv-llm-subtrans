@@ -19,8 +19,6 @@ from typing import IO, Any, Iterator, Optional, TextIO, TypedDict
 from openai import OpenAI
 
 
-RE_KEY_OPENAI = r"sk-\w+T3BlbkFJ\w+"  # T3BlbkFJ = base64("OpenAI")
-RE_KEY_DEEPSEEK = r"sk-[a-z0-9]{32}"
 PROMPT_DEV = """\
 User will input content of SubRip (SRT) subtitles, with timestamp lines \
 removed to save tokens. You need to translate these dialogues into \
@@ -42,14 +40,24 @@ Subtitle file name: {subtitle_name}
 
 @dataclass
 class PlatformOpts:
+    key_regex: str
     model: str
     base_url: Optional[str] = None
 
 
-OPENAI_DEFAULT = PlatformOpts("gpt-4o-mini")
-DEEPSEEK_DEFAULT = PlatformOpts(
-    model="deepseek-chat", base_url="https://api.deepseek.com/v1"
-)
+PLATFORM_DEFAUTLS = {
+    "OpenAI": PlatformOpts(r"sk-\w+T3BlbkFJ\w+", "gpt-4o-mini"),
+    "Gemini": PlatformOpts(
+        key_regex=r"AIzaSyD[\w\-_]+",
+        model="gemini-2.5-pro-exp-03-25",  # not working well
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+    ),
+    "DeepSeek": PlatformOpts(
+        key_regex=r"sk-[a-z0-9]{32}",
+        model="deepseek-chat",
+        base_url="https://api.deepseek.com/v1",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -307,15 +315,14 @@ class Args:
         key = os.environ.get("OPENAI_API_KEY")
         if not key:
             raise KeyError("No OPENAI_API_KEY set")
-        if re.fullmatch(RE_KEY_OPENAI, key):
-            base_url = OPENAI_DEFAULT.base_url
-            model = OPENAI_DEFAULT.model
-        elif re.fullmatch(RE_KEY_DEEPSEEK, key):
-            base_url = DEEPSEEK_DEFAULT.base_url
-            model = DEEPSEEK_DEFAULT.model
-        else:
-            base_url = None
-            model = None
+        base_url = None
+        model = None
+        for platform in PLATFORM_DEFAUTLS.values():
+            print(platform, key, re.fullmatch(platform.key_regex, key))
+            if re.fullmatch(platform.key_regex, key):
+                base_url = platform.base_url
+                model = platform.model
+                break
         if self.model:
             model = self.model
         if model is None:
