@@ -68,6 +68,19 @@ See [llm_subtrans.conf](llm_subtrans.conf).
 
 Put this file on `%APPDATA%\mpv\script-opts\` or `~/.config/mpv/script-opts/`.
 
+## Tested models
+
+You can try any OpenAI API-compatible service, but some don't follow our prompt very well.
+
+Working:
+
+- `gpt-4o-mini` from OpenAI
+- `deepseek-chat` from DeepSeek
+
+Not working:
+
+- `gemini-2.5-pro-exp-03-25` from Gemini
+
 ## Tips
 
 - The default key binding is `Alt+T`, press once to start,
