@@ -267,7 +267,8 @@ def translate_subtitle_batch(
         model=model,
         stream=True,
         messages=[
-            {"role": "developer", "content": prompt_dev},
+            # DeekSeek do not recognize `developer` role, use `system` instead
+            {"role": "system", "content": prompt_dev},
             {"role": "user", "content": user_prompt},
         ],
     )
